@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Electricity Dashboard</title>
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            padding: 20px;
+        }
+
+        .sources {
+            background-color: #f8f9fa;
+            padding: 15px;
+            border-radius: 10px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+            margin-bottom: 30px;
+        }
+
+        .sources h2 {
+            margin-top: 0;
+        }
+
+        .source-list {
+            display: flex;
+            gap: 20px;
+            flex-wrap: wrap;
+        }
+
+        .source-item {
+            background-color: white;
+            padding: 10px 15px;
+            border-radius: 8px;
+            box-shadow: 0 0 5px rgba(0,0,0,0.05);
+            min-width: 150px;
+        }
+
+        #chart {
+            width: 100%;
+        }
+
+        .logout-btn {
+            margin-bottom: 20px;
+            padding: 8px 12px;
+            background-color: #dc3545;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+
+        .logout-btn:hover {
+            background-color: #c82333;
+        }
+    </style>
+</head>
+<body>
+    <h1>Electricity Usage Dashboard</h1>
+    <p>Welcome, {{ username }}!</p>
+    <button class="logout-btn" onclick="logout()">Logout</button>
+
+    <!-- <div class="sources">
+        <h2>Electricity Sources</h2>
+        <div class="source-list">
+            {% for source in sources %}
+            <div class="source-item">
+                <strong>{{ source.name }}</strong><br>
+                {{ source.power }} MW
+            </div>
+            {% endfor %}
+        </div>
+    </div> -->
+    <div class="sources">
+        <h2>Electricity Sources</h2>
+        <div style="margin-bottom:10px;">
+            <div style="margin-bottom:6px; font-weight:bold;">Select sources (click to toggle). None selected = All my sources.</div>
+            <div id="sourceChips" style="display:flex;flex-wrap:wrap;gap:8px;">
+                {% for source in sources %}
+                <div class="chip" data-id="{{ source.source_id }}" style="padding:6px 10px;border:1px solid #888;border-radius:16px;cursor:pointer;font-size:0.85em;user-select:none;">
+                    {{ source.source_type }} ({{ source.source_id }})
+                </div>
+                {% endfor %}
+            </div>
+            <label for="horizonInput" style="margin-left:0;">Horizon (h):</label>
+            <input id="horizonInput" type="number" min="1" max="168" value="24" style="width:70px;margin-right:8px;" />
+            <button id="trainBtn" style="padding:6px 12px;">Train & Forecast</button>
+            <span id="trainStatus" style="margin-left:10px;font-size:0.9em;color:#555;"></span>
+        </div>
+        <div class="source-list">
+            {% for source in sources %}
+            <div class="source-item">
+                <strong>{{ source.source_type }}</strong><br>
+                Capacity: {{ source.capacity_kw }} kW<br>
+                Location: {{ source.street }}, {{ source.city }}
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+
+    <div id="chart"></div>
+    <div id="forecastContainer" style="margin-top:30px;display:none;">
+        <h2>Forecast</h2>
+        <table id="forecastTable" border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse;font-size:0.9em;">
+            <thead>
+                <tr><th>Timestamp</th><th>Forecast kW</th><th>Lower</th><th>Upper</th></tr>
+            </thead>
+            <tbody></tbody>
+        </table>
+    </div>
+
+    <script>
+    // Utility: chip multi-select state
+    const selected = new Set();
+
+        async function fetchDataAndPlot() {
+            const response = await fetch('/data');
+            const data = await response.json();
+
+            const trace1 = {
+                x: data['Time'],
+                y: data['Usage'],
+                mode: 'lines+markers',
+                name: 'Usage',
+                line: { color: 'red' }
+            };
+
+            const trace2 = {
+                x: data['Time'],
+                y: data['Production'],
+                mode: 'lines+markers',
+                name: 'Production',
+                line: { color: 'green' }
+            };
+
+            const layout = {
+                title: 'Electricity Usage vs Production - Last 24 Hours',
+                xaxis: { title: 'Time' },
+                yaxis: { title: 'Energy (kWh)' },
+                legend: { orientation: 'h' }
+            };
+
+            Plotly.newPlot('chart', [trace1, trace2], layout);
+        }
+
+        async function logout() {
+            await fetch('/auth/logout', { method: 'POST' });
+            window.location.href = '/auth/login-page';
+        }
+
+        fetchDataAndPlot();
+        setInterval(fetchDataAndPlot, 10000);
+
+        // Initialize chip click handlers
+        document.querySelectorAll('#sourceChips .chip').forEach(chip => {
+            chip.addEventListener('click', () => {
+                const id = chip.getAttribute('data-id');
+                if (selected.has(id)) {
+                    selected.delete(id);
+                    chip.classList.remove('chip-selected');
+                } else {
+                    selected.add(id);
+                    chip.classList.add('chip-selected');
+                }
+            });
+        });
+
+        document.getElementById('trainBtn').addEventListener('click', async () => {
+            const horizon = document.getElementById('horizonInput').value || '24';
+            const statusEl = document.getElementById('trainStatus');
+            statusEl.textContent = 'Training...';
+            statusEl.style.color = '#555';
+            try {
+                const params = new URLSearchParams({ horizon });
+                if (selected.size === 1) {
+                    params.append('source_id', Array.from(selected)[0]);
+                } else if (selected.size > 1) {
+                    params.append('source_ids', Array.from(selected).join(','));
+                }
+                const resp = await fetch(`/data/forecast?${params.toString()}`);
+                const json = await resp.json();
+                if (!resp.ok) {
+                    statusEl.textContent = json.error || 'Error';
+                    statusEl.style.color = 'red';
+                    return;
+                }
+                statusEl.textContent = `OK (scope: ${json.scope})`;
+                statusEl.style.color = 'green';
+                const fc = json.forecast;
+                const tbody = document.querySelector('#forecastTable tbody');
+                tbody.innerHTML = '';
+                for (let i = 0; i < fc.timestamp.length; i++) {
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = `<td>${fc.timestamp[i]}</td><td>${fc.power_kw[i]}</td><td>${fc.lower[i]}</td><td>${fc.upper[i]}</td>`;
+                    tbody.appendChild(tr);
+                }
+                document.getElementById('forecastContainer').style.display = 'block';
+                // Ask user if they want to save model
+                setTimeout(async () => {
+                    const want = confirm('Model trained. Do you want to save it to the server in your user folder?');
+                    if (!want) return;
+                    statusEl.textContent = 'Saving model...';
+                    try {
+                        const respSave = await fetch('/data/save_model', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ scope: json.scope })
+                        });
+                        const saveJson = await respSave.json();
+                        if (!respSave.ok) {
+                            statusEl.textContent = saveJson.error || 'Save failed';
+                            statusEl.style.color = 'red';
+                        } else {
+                            statusEl.textContent = `Saved: ${saveJson.path}`;
+                            statusEl.style.color = 'green';
+                        }
+                    } catch (e) {
+                        statusEl.textContent = 'Save request failed';
+                        statusEl.style.color = 'red';
+                    }
+                }, 300);
+            } catch (e) {
+                statusEl.textContent = 'Request failed';
+                statusEl.style.color = 'red';
+            }
+        });
+    </script>
+    <style>
+        .chip-selected { background-color:#007bff; color:#fff; }
+    </style>
+</body>
+</html>
