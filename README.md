@@ -88,13 +88,10 @@ The application exposes several API endpoints, primarily for authentication and 
 ├── db_operations.py     # Database operations and data API blueprint
 ├── login.py             # Authentication blueprint
 ├── main.py              # Main Flask application
-├── run_migration_add_role.py # DB migration script
 ├── timeseries_model.py  # SARIMAX model training and forecasting
 ├── templates/
 │   ├── dashboard.html   # Main dashboard view
 │   └── login.html       # Login page
-├── migrations/
-│   └── 001_add_role_column.sql # SQL migration file
 ├── config.ini           # (Needs to be created) DB configuration
 └── README.md            # This file
 ```
