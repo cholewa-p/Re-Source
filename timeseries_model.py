@@ -16,16 +16,17 @@ Requirements (install if missing):
     pip install pandas numpy psycopg2-binary statsmodels
 
 """
-from __future__ import annotations
 
+from __future__ import annotations
 import logging
 from datetime import datetime
 from typing import Optional, Dict, Any, Tuple, List
 
+import pickle
 import psycopg2
 import pandas as pd
-import numpy as np
 from statsmodels.tsa.statespace.sarimax import SARIMAX, SARIMAXResults
+
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Data Access
 # ---------------------------------------------------------------------------
+
 
 def fetch_timeseries(
     db_config: Dict[str, Any],
@@ -87,9 +89,7 @@ def fetch_timeseries(
     series = series.reindex(full_index)
     missing = series.isna().sum()
     if missing:
-        logger.warning(
-            "Found %d missing %sly points; forward/back filling gaps.", missing, freq
-        )
+        logger.warning("Found %d missing %sly points; forward/back filling gaps.", missing, freq)
         series = series.ffill().bfill()
 
     if tz:
@@ -105,15 +105,16 @@ def fetch_timeseries(
 # Modeling
 # ---------------------------------------------------------------------------
 
+
 class ElectricityProductionModel:
     """Wrapper for an hourly SARIMA model for electricity production."""
 
     def __init__(
-            self,
-            order: Tuple[int, int, int] = (1, 1, 1),
-            seasonal_order: Tuple[int, int, int, int] = (1, 0, 1, 24),
-            enforce_stationarity: bool = False,
-            enforce_invertibility: bool = False,
+        self,
+        order: Tuple[int, int, int] = (1, 1, 1),
+        seasonal_order: Tuple[int, int, int, int] = (1, 0, 1, 24),
+        enforce_stationarity: bool = False,
+        enforce_invertibility: bool = False,
     ) -> None:
         self.order = order
         self.seasonal_order = seasonal_order
@@ -144,7 +145,9 @@ class ElectricityProductionModel:
         """
         if self.model_ is None:
             raise RuntimeError("Model not fit yet.")
-        future_index = pd.date_range(self.train_index_[-1] + pd.Timedelta(hours=1), periods=steps, freq="H")
+        future_index = pd.date_range(
+            self.train_index_[-1] + pd.Timedelta(hours=1), periods=steps, freq="H"
+        )
 
         pred = self.result_.get_forecast(steps=steps)
         mean = pred.predicted_mean
@@ -156,9 +159,8 @@ class ElectricityProductionModel:
 
     def save(self, path: str) -> None:
         """Persist model to disk.
-    Saves state via statsmodels' native save + metadata sidecar.
+        Saves state via statsmodels' native save + metadata sidecar.
         """
-        import pickle
 
         payload = {
             "order": self.order,
@@ -176,7 +178,6 @@ class ElectricityProductionModel:
     @staticmethod
     def load(path: str) -> "ElectricityProductionModel":  # pragma: no cover - IO wrapper
         """Load a model produced by save()."""
-        import pickle
         obj = ElectricityProductionModel()
         obj.result_ = SARIMAXResults.load(path)
         meta_path = path + ".meta.pkl"
@@ -186,7 +187,9 @@ class ElectricityProductionModel:
             obj.order = meta.get("order", obj.order)
             obj.seasonal_order = meta.get("seasonal_order", obj.seasonal_order)
             if meta.get("train_index_start") and meta.get("train_index_end"):
-                obj.train_index_ = pd.date_range(meta["train_index_start"], meta["train_index_end"], freq="H")
+                obj.train_index_ = pd.date_range(
+                    meta["train_index_start"], meta["train_index_end"], freq="H"
+                )
         except FileNotFoundError:
             logger.warning("Metadata file %s not found; some attributes may be missing.", meta_path)
         return obj
@@ -195,6 +198,7 @@ class ElectricityProductionModel:
 # ---------------------------------------------------------------------------
 # Orchestrator helper
 # ---------------------------------------------------------------------------
+
 
 def train_electricity_model(
     db_config: Dict[str, Any],
@@ -269,4 +273,3 @@ def train_aggregated_model(
     model = ElectricityProductionModel().fit(series)
     fc = model.forecast(horizon_hours)
     return model, fc
-
