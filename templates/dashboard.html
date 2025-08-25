@@ -73,6 +73,7 @@
     <div class="sources">
         <h2>Electricity Sources</h2>
         <div style="margin-bottom:10px;">
+            {%- if session.get('role') == 'admin' -%}
             <div style="margin-bottom:6px; font-weight:bold;">Select sources (click to toggle). None selected = All my sources.</div>
             <div id="sourceChips" style="display:flex;flex-wrap:wrap;gap:8px;">
                 {% for source in sources %}
@@ -81,10 +82,13 @@
                 </div>
                 {% endfor %}
             </div>
+            {%- endif -%}
+            {%- if session.get('role') == 'admin' -%}
             <label for="horizonInput" style="margin-left:0;">Horizon (h):</label>
             <input id="horizonInput" type="number" min="1" max="168" value="24" style="width:70px;margin-right:8px;" />
             <button id="trainBtn" style="padding:6px 12px;">Train & Forecast</button>
             <span id="trainStatus" style="margin-left:10px;font-size:0.9em;color:#555;"></span>
+            {%- endif -%}
         </div>
         <div class="source-list">
             {% for source in sources %}
@@ -97,7 +101,38 @@
         </div>
     </div>
 
+    <div class="sources" style="margin-top:20px;">
+        <h2>Meters</h2>
+        <div id="metersTableContainer">
+            <table id="metersTable" data-is-admin="{{ '1' if session.get('role') == 'admin' else '0' }}" border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse;font-size:0.9em;width:100%;">
+                {%- if session.get('role') == 'admin' -%}
+                <thead>
+                    <tr>
+                        <th>Meter ID</th>
+                        <th>Address</th>
+                        <th>Owner</th>
+                        <th>Max Load (kW)</th>
+                        <th>Last Timestamp</th>
+                        <th>Last kW</th>
+                    </tr>
+                </thead>
+                {%- else -%}
+                <thead>
+                    <tr>
+                        <th>Address</th>
+                        <th>Max Load (kW)</th>
+                        <th>Last Timestamp</th>
+                        <th>Last kW</th>
+                    </tr>
+                </thead>
+                {%- endif -%}
+                <tbody></tbody>
+            </table>
+        </div>
+    </div>
+
     <div id="chart"></div>
+    {%- if session.get('role') == 'admin' -%}
     <div id="forecastContainer" style="margin-top:30px;display:none;">
         <h2>Forecast</h2>
         <table id="forecastTable" border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse;font-size:0.9em;">
@@ -107,39 +142,43 @@
             <tbody></tbody>
         </table>
     </div>
+    {%- endif -%}
 
     <script>
     // Utility: chip multi-select state
     const selected = new Set();
 
         async function fetchDataAndPlot() {
-            const response = await fetch('/data');
-            const data = await response.json();
+            // Build query params based on selected chips
+            const hours = 3; // show only last 3 hours
+            const params = new URLSearchParams({ hours: String(hours) });
+            if (selected.size === 1) {
+                // selected source IDs are energy source IDs; pass to production
+                params.set('source_ids', Array.from(selected).join(','));
+            } else if (selected.size > 1) {
+                params.set('source_ids', Array.from(selected).join(','));
+            }
 
-            const trace1 = {
-                x: data['Time'],
-                y: data['Usage'],
-                mode: 'lines+markers',
-                name: 'Usage',
-                line: { color: 'red' }
-            };
+            try {
+                // Fetch usage and production in parallel
+                const prodUrl = '/data/production?' + params.toString();
+                const usageUrl = '/data/usage?' + params.toString();
+                const [prodResp, usageResp] = await Promise.all([fetch(prodUrl), fetch(usageUrl)]);
+                if (!prodResp.ok || !usageResp.ok) {
+                    console.debug('Data endpoints returned non-OK');
+                    return;
+                }
+                const prod = await prodResp.json();
+                const usage = await usageResp.json();
 
-            const trace2 = {
-                x: data['Time'],
-                y: data['Production'],
-                mode: 'lines+markers',
-                name: 'Production',
-                line: { color: 'green' }
-            };
+                const traceProd = { x: prod['Time'], y: prod['Production'], mode: 'lines+markers', name: 'Production', line: { color: 'green' } };
+                const traceUsage = { x: usage['Time'], y: usage['Usage'], mode: 'lines+markers', name: 'Usage', line: { color: 'red' } };
 
-            const layout = {
-                title: 'Electricity Usage vs Production - Last 24 Hours',
-                xaxis: { title: 'Time' },
-                yaxis: { title: 'Energy (kWh)' },
-                legend: { orientation: 'h' }
-            };
-
-            Plotly.newPlot('chart', [trace1, trace2], layout);
+                const layout = { title: 'Electricity Usage vs Production - Last 3 Hours', xaxis: { title: 'Time' }, yaxis: { title: 'Energy (kWh)' }, legend: { orientation: 'h' } };
+                Plotly.newPlot('chart', [traceUsage, traceProd], layout);
+            } catch (err) {
+                console.debug('fetchDataAndPlot error', err);
+            }
         }
 
         async function logout() {
@@ -164,7 +203,38 @@
             });
         });
 
-        document.getElementById('trainBtn').addEventListener('click', async () => {
+    // Read admin flag from the table's data attribute (set server-side)
+    const isAdmin = document.getElementById('metersTable').dataset.isAdmin === '1';
+
+        async function fetchMeters() {
+            try {
+                const resp = await fetch('/get_meters_data');
+                if (!resp.ok) return;
+                const j = await resp.json();
+                const tbody = document.querySelector('#metersTable tbody');
+                tbody.innerHTML = '';
+                for (const m of j.meters) {
+                    const tr = document.createElement('tr');
+                    if (isAdmin) {
+                        tr.innerHTML = `<td>${m.meter_id}</td><td>${m.address}</td><td>${m.owner}</td><td>${m.max_load_kw||''}</td><td>${m.last_timestamp||''}</td><td>${m.last_consumption||''}</td>`;
+                    } else {
+                        // normal user: don't reference meter_id/owner at all
+                        tr.innerHTML = `<td>${m.address}</td><td>${m.max_load_kw||''}</td><td>${m.last_timestamp||''}</td><td>${m.last_consumption||''}</td>`;
+                    }
+                    tbody.appendChild(tr);
+                }
+            } catch (e) {
+                console.debug('fetchMeters failed', e);
+            }
+        }
+
+        // load meters periodically
+        fetchMeters();
+        setInterval(fetchMeters, 30000);
+
+        const trainBtn = document.getElementById('trainBtn');
+        if (trainBtn) {
+            trainBtn.addEventListener('click', async () => {
             const horizon = document.getElementById('horizonInput').value || '24';
             const statusEl = document.getElementById('trainStatus');
             statusEl.textContent = 'Training...';
@@ -222,7 +292,8 @@
                 statusEl.textContent = 'Request failed';
                 statusEl.style.color = 'red';
             }
-        });
+            });
+        }
     </script>
     <style>
         .chip-selected { background-color:#007bff; color:#fff; }

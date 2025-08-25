@@ -384,3 +384,240 @@ def insert_timeseries_data(rows: List[Dict[str, Any]], db_config: Dict[str, Any]
         return len(rows)
     finally:
         conn.close()
+
+
+def insert_consumption_data(rows: List[Dict[str, Any]], db_config: Dict[str, Any]) -> int:
+    """Insert batch of consumption readings.
+
+    rows: list of {"timestamp": datetime, "meter_id": int, "consumption": float}
+    Returns number of inserted rows.
+    """
+    if not rows:
+        return 0
+    conn = psycopg2.connect(**db_config)
+    try:
+        with conn, conn.cursor() as cur:
+            execute_values(
+                cur,
+                "INSERT INTO consumption_readings (timestamp, meter_id, consumption_kw) VALUES %s ON CONFLICT DO NOTHING",
+                [(r["timestamp"], r["meter_id"], r["consumption"]) for r in rows],
+            )
+        logger.info("Inserted %d consumption rows successfully.", len(rows))
+        return len(rows)
+    finally:
+        conn.close()
+
+
+@db_bp.route("/production", methods=["GET"])
+def production():
+    """Return recent production (power_generation) timeseries aggregated across sources.
+
+    Query params:
+      hours (int, default 24)
+      source_ids (optional comma-separated list)
+
+    Role behavior:
+      - admin: can request any sources or omit to get all
+      - normal user: when omitted returns user's sources; when provided, only allowed if owned
+    """
+    if "user_id" not in session:
+        return jsonify({"error": "Unauthorized"}), 401
+    role = session.get("role", "user")
+    hours_arg = request.args.get("hours", "24")
+    source_ids_arg = request.args.get("source_ids")
+    try:
+        hours = int(hours_arg)
+        if hours <= 0 or hours > 7 * 24:
+            return jsonify({"error": "hours must be between 1 and 168"}), 400
+    except ValueError:
+        return jsonify({"error": "Invalid hours parameter"}), 400
+
+    db_cfg = get_db_config()
+    conn = psycopg2.connect(**db_cfg, cursor_factory=RealDictCursor)
+    try:
+        cur = conn.cursor()
+        # Determine source_id list based on role and provided params
+        if role == "admin":
+            if source_ids_arg:
+                source_ids = [int(x) for x in source_ids_arg.split(",") if x.strip()]
+            else:
+                cur.execute("SELECT source_id FROM energy_sources")
+                source_ids = [r["source_id"] for r in cur.fetchall()]
+        else:
+            username = session.get("username")
+            if source_ids_arg:
+                candidate = [int(x) for x in source_ids_arg.split(",") if x.strip()]
+                cur.execute(
+                    """
+                    SELECT es.source_id FROM energy_sources es
+                    JOIN addresses a ON es.address_id = a.address_id
+                    JOIN clients c ON a.client_id = c.client_id
+                    JOIN user_accounts ua ON c.client_id = ua.client_id
+                    WHERE ua.username = %s AND es.source_id = ANY(%s)
+                    """,
+                    (username, candidate),
+                )
+                found = {r["source_id"] for r in cur.fetchall()}
+                missing = set(candidate) - found
+                if missing:
+                    return (
+                        jsonify({"error": f"Sources not found or not owned: {sorted(missing)}"}),
+                        404,
+                    )
+                source_ids = candidate
+            else:
+                cur.execute(
+                    """
+                    SELECT es.source_id FROM energy_sources es
+                    JOIN addresses a ON es.address_id = a.address_id
+                    JOIN clients c ON a.client_id = c.client_id
+                    JOIN user_accounts ua ON c.client_id = ua.client_id
+                    WHERE ua.username = %s
+                    """,
+                    (username,),
+                )
+                source_ids = [r["source_id"] for r in cur.fetchall()]
+                if not source_ids:
+                    return jsonify({"error": "User has no sources"}), 404
+
+        # Aggregate production by timestamp for the last `hours`
+        cur.execute(
+            "SELECT time AT TIME ZONE 'UTC' AS time_utc, SUM(power_kw) AS production "
+            "FROM power_generation "
+            "WHERE time >= NOW() - INTERVAL %s AND source_id = ANY(%s) "
+            "GROUP BY time_utc ORDER BY time_utc ASC",
+            (f"{hours} hours", source_ids),
+        )
+        rows = cur.fetchall()
+        times = [r["time_utc"].isoformat() for r in rows]
+        production_vals = [float(r["production"] or 0) for r in rows]
+        return jsonify({"Time": times, "Production": production_vals}), 200
+    finally:
+        conn.close()
+
+
+@db_bp.route("/usage", methods=["GET"])
+def usage():
+    """Return recent usage (consumption_readings) timeseries aggregated across meters.
+
+    Query params:
+      hours (int, default 24)
+      meter_ids (optional comma-separated list)
+
+    Role behavior mirrors /production but operates on meters.
+    """
+    if "user_id" not in session:
+        return jsonify({"error": "Unauthorized"}), 401
+    role = session.get("role", "user")
+    hours_arg = request.args.get("hours", "24")
+    meter_ids_arg = request.args.get("meter_ids")
+    try:
+        hours = int(hours_arg)
+        if hours <= 0 or hours > 7 * 24:
+            return jsonify({"error": "hours must be between 1 and 168"}), 400
+    except ValueError:
+        return jsonify({"error": "Invalid hours parameter"}), 400
+
+    db_cfg = get_db_config()
+    conn = psycopg2.connect(**db_cfg, cursor_factory=RealDictCursor)
+    try:
+        cur = conn.cursor()
+        if role == "admin":
+            if meter_ids_arg:
+                meter_ids = [int(x) for x in meter_ids_arg.split(",") if x.strip()]
+            else:
+                cur.execute("SELECT meter_id FROM consumption_meters")
+                meter_ids = [r["meter_id"] for r in cur.fetchall()]
+        else:
+            username = session.get("username")
+            if meter_ids_arg:
+                candidate = [int(x) for x in meter_ids_arg.split(",") if x.strip()]
+                # validate ownership via users -> clients -> addresses -> meters join
+                cur.execute(
+                    """
+                    SELECT cm.meter_id FROM consumption_meters cm
+                    JOIN addresses a ON cm.address_id = a.address_id
+                    JOIN clients c ON a.client_id = c.client_id
+                    JOIN user_accounts ua ON c.client_id = ua.client_id
+                    WHERE ua.username = %s AND cm.meter_id = ANY(%s)
+                    """,
+                    (username, candidate),
+                )
+                found = {r["meter_id"] for r in cur.fetchall()}
+                missing = set(candidate) - found
+                if missing:
+                    return (
+                        jsonify({"error": f"Meters not found or not owned: {sorted(missing)}"}),
+                        404,
+                    )
+                meter_ids = candidate
+            else:
+                cur.execute(
+                    """
+                    SELECT cm.meter_id FROM consumption_meters cm
+                    JOIN addresses a ON cm.address_id = a.address_id
+                    JOIN clients c ON a.client_id = c.client_id
+                    JOIN user_accounts ua ON c.client_id = ua.client_id
+                    WHERE ua.username = %s
+                    """,
+                    (username,),
+                )
+                meter_ids = [r["meter_id"] for r in cur.fetchall()]
+                if not meter_ids:
+                    return jsonify({"error": "User has no meters"}), 404
+
+        cur.execute(
+            "SELECT timestamp AT TIME ZONE 'UTC' AS time_utc, SUM(consumption_kw) AS usage "
+            "FROM consumption_readings "
+            "WHERE timestamp >= NOW() - INTERVAL %s AND meter_id = ANY(%s) "
+            "GROUP BY time_utc ORDER BY time_utc ASC",
+            (f"{hours} hours", meter_ids),
+        )
+        rows = cur.fetchall()
+        times = [r["time_utc"].isoformat() for r in rows]
+        usage_vals = [float(r["usage"] or 0) for r in rows]
+        return jsonify({"Time": times, "Usage": usage_vals}), 200
+    finally:
+        conn.close()
+
+
+@db_bp.route("/update_consumption_readings", methods=["POST"])
+def update_consumption_readings():
+    """Ingest consumption readings posted as JSON array.
+
+    Expected payload (list of objects):
+      [ {"timestamp": "2025-08-24T12:00:00Z", "meter_id": 5, "consumption": 1.23}, ... ]
+    """
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, list):
+        return jsonify({"error": "Payload must be a JSON array"}), 400
+
+    try:
+        cleaned: List[Dict[str, Any]] = []
+        for i, row in enumerate(payload):
+            if not isinstance(row, dict):
+                raise ValueError(f"Element {i} not an object")
+            missing = {k for k in ("timestamp", "meter_id", "consumption") if k not in row}
+            if missing:
+                raise ValueError(f"Missing keys {missing} in element {i}")
+            ts_raw = row["timestamp"]
+            if isinstance(ts_raw, (int, float)):
+                ts = datetime.utcfromtimestamp(ts_raw)
+            else:
+                try:
+                    ts = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
+                except Exception:
+                    raise ValueError(f"Invalid timestamp format in element {i}: {ts_raw}")
+            meter_id = int(row["meter_id"])  # raises if invalid
+            consumption = float(row["consumption"])  # raises if invalid
+            cleaned.append({"timestamp": ts, "meter_id": meter_id, "consumption": consumption})
+
+        inserted = insert_consumption_data(cleaned, get_db_config())
+        logger.info("Inserted %d consumption rows from synthetic generator", inserted)
+        return jsonify({"message": "Operation successful", "rows": inserted}), 200
+    except ValueError as ve:
+        logger.warning("Validation error: %s", ve)
+        return jsonify({"error": str(ve)}), 400
+    except Exception:
+        logger.exception("Failed to ingest consumption batch")
+        return jsonify({"error": "Internal server error"}), 500

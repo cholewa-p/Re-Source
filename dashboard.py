@@ -1,7 +1,5 @@
 from flask import session, render_template, Blueprint, jsonify
 import datetime
-import random
-import pandas as pd
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from db_operations import get_db_config
@@ -63,25 +61,99 @@ def get_sources_data():
 dashboard_bp = Blueprint("dashboard", __name__)
 
 
-def generate_data():
-    now = datetime.datetime.now()
-    times = [now - datetime.timedelta(hours=i) for i in range(24)][::-1]
-    usage = [round(random.uniform(0.5, 2.5), 2) for _ in times]
-    production = [round(u * random.uniform(0.6, 1.1), 2) for u in usage]
-    df = pd.DataFrame(
-        {
-            "Time": [t.strftime("%Y-%m-%d %H:%M:%S") for t in times],
-            "Usage": usage,
-            "Production": production,
-        }
-    )
-    return df
+@dashboard_bp.route("/get_meters_data", methods=["GET"])
+def get_meters_data():
+    """Return list of consumption meters with owner/address and last reading.
+
+    JSON: { "meters": [ { "meter_id": int, "address": str, "owner": str,
+                         "last_timestamp": iso, "last_consumption": float }, ... ] }
+    """
+    # Require authenticated user
+    if "user_id" not in session:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    role = session.get("role", "user")
+    username = session.get("username")
+
+    db_cfg = get_db_config()
+    conn = psycopg2.connect(**db_cfg, cursor_factory=RealDictCursor)
+    try:
+        cur = conn.cursor()
+        if role == "admin":
+            cur.execute(
+                """
+                SELECT
+                  cm.meter_id,
+                  cm.max_load_kw,
+                  COALESCE(a.street, '') || ', ' || COALESCE(a.city, '') AS address,
+                  COALESCE(ua.username, '') AS owner,
+                  (SELECT cr.timestamp AT TIME ZONE 'UTC' FROM consumption_readings cr
+                   WHERE cr.meter_id = cm.meter_id
+                   ORDER BY cr.timestamp DESC LIMIT 1) AS last_timestamp,
+                  (SELECT cr.consumption_kw FROM consumption_readings cr
+                   WHERE cr.meter_id = cm.meter_id
+                   ORDER BY cr.timestamp DESC LIMIT 1) AS last_consumption
+                FROM consumption_meters cm
+                LEFT JOIN addresses a ON cm.address_id = a.address_id
+                LEFT JOIN clients c ON a.client_id = c.client_id
+                LEFT JOIN user_accounts ua ON c.client_id = ua.client_id
+                ORDER BY cm.meter_id
+                """
+            )
+            rows = cur.fetchall()
+        else:
+            # normal user: only their meters
+            cur.execute(
+                """
+                SELECT
+                  COALESCE(a.street, '') || ', ' || COALESCE(a.city, '') AS address,
+                  cm.max_load_kw,
+                  (SELECT cr.timestamp AT TIME ZONE 'UTC' FROM consumption_readings cr
+                   WHERE cr.meter_id = cm.meter_id
+                   ORDER BY cr.timestamp DESC LIMIT 1) AS last_timestamp,
+                  (SELECT cr.consumption_kw FROM consumption_readings cr
+                   WHERE cr.meter_id = cm.meter_id
+                   ORDER BY cr.timestamp DESC LIMIT 1) AS last_consumption
+                FROM consumption_meters cm
+                JOIN addresses a ON cm.address_id = a.address_id
+                JOIN clients c ON a.client_id = c.client_id
+                JOIN user_accounts ua ON c.client_id = ua.client_id
+                WHERE ua.username = %s
+                ORDER BY cm.meter_id
+                """,
+                (username,),
+            )
+            rows = cur.fetchall()
+
+        meters = []
+        for r in rows:
+            if role == "admin":
+                meters.append(
+                    {
+                        "meter_id": r["meter_id"],
+                        "address": r["address"],
+                        "owner": r["owner"],
+                        "max_load_kw": float(r["max_load_kw"]) if r.get("max_load_kw") is not None else None,
+                        "last_timestamp": r["last_timestamp"].isoformat() if r["last_timestamp"] else None,
+                        "last_consumption": float(r["last_consumption"]) if r["last_consumption"] is not None else None,
+                    }
+                )
+            else:
+                meters.append(
+                    {
+                        "address": r["address"],
+                        "max_load_kw": float(r["max_load_kw"]) if r.get("max_load_kw") is not None else None,
+                        "last_timestamp": r["last_timestamp"].isoformat() if r.get("last_timestamp") else None,
+                        "last_consumption": float(r["last_consumption"]) if r.get("last_consumption") is not None else None,
+                    }
+                )
+        return jsonify({"meters": meters}), 200
+    finally:
+        conn.close()
 
 
-@dashboard_bp.route('/data')
-def data():
-    df = generate_data()
-    return jsonify(df.to_dict(orient='list'))
+# Synthetic generator removed — plotting is performed by fetching
+# real data from the database via the `/data/usage` and `/data/production` endpoints
 
 
 @dashboard_bp.route("/dashboard")
