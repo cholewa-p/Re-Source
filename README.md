@@ -51,8 +51,12 @@ This project is a proof-of-concept web application designed for managing and for
     host = localhost
     port = 5432
     dbname = your_db_name
-    user = your_db_user
-    password = your_db_password
+    user = your_db_user (by default: postgres)
+    password = your_db_password (by default: password)
+    ```
+    Then run the prepared docker image:
+    ```bash
+    docker run -d --name some-timescaledb -p 5432:5432 -e POSTGRES_PASSWORD=your_db_password (by default: password) timescale/timescaledb:latest-pg17
     ```
 5.  **Run the application:**
     ```bash

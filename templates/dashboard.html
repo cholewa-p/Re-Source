@@ -3,61 +3,19 @@
 <head>
     <title>Electricity Dashboard</title>
     <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
-    <style>
-        body {
-            font-family: Arial, sans-serif;
-            padding: 20px;
-        }
-
-        .sources {
-            background-color: #f8f9fa;
-            padding: 15px;
-            border-radius: 10px;
-            box-shadow: 0 0 10px rgba(0,0,0,0.1);
-            margin-bottom: 30px;
-        }
-
-        .sources h2 {
-            margin-top: 0;
-        }
-
-        .source-list {
-            display: flex;
-            gap: 20px;
-            flex-wrap: wrap;
-        }
-
-        .source-item {
-            background-color: white;
-            padding: 10px 15px;
-            border-radius: 8px;
-            box-shadow: 0 0 5px rgba(0,0,0,0.05);
-            min-width: 150px;
-        }
-
-        #chart {
-            width: 100%;
-        }
-
-        .logout-btn {
-            margin-bottom: 20px;
-            padding: 8px 12px;
-            background-color: #dc3545;
-            color: white;
-            border: none;
-            border-radius: 5px;
-            cursor: pointer;
-        }
-
-        .logout-btn:hover {
-            background-color: #c82333;
-        }
-    </style>
+    <link rel="stylesheet" href="/static/css/style.css" />
 </head>
 <body>
-    <h1>Electricity Usage Dashboard</h1>
-    <p>Welcome, {{ username }}!</p>
-    <button class="logout-btn" onclick="logout()">Logout</button>
+    <div class="container">
+        <div class="header">
+            <div>
+                <h1>Electricity Usage Dashboard</h1>
+                <div class="small">Welcome, {{ username }}!</div>
+            </div>
+            <div>
+                <button class="logout-btn" onclick="logout()">Logout</button>
+            </div>
+        </div>
 
     <!-- <div class="sources">
         <h2>Electricity Sources</h2>
@@ -70,76 +28,119 @@
             {% endfor %}
         </div>
     </div> -->
-    <div class="sources">
+    <div class="card sources">
         <h2>Electricity Sources</h2>
         <div style="margin-bottom:10px;">
+            {%- if session.get('role') == 'admin' -%}
             <div style="margin-bottom:6px; font-weight:bold;">Select sources (click to toggle). None selected = All my sources.</div>
-            <div id="sourceChips" style="display:flex;flex-wrap:wrap;gap:8px;">
+            <div id="sourceChips" class="chips">
                 {% for source in sources %}
                 <div class="chip" data-id="{{ source.source_id }}" style="padding:6px 10px;border:1px solid #888;border-radius:16px;cursor:pointer;font-size:0.85em;user-select:none;">
                     {{ source.source_type }} ({{ source.source_id }})
                 </div>
                 {% endfor %}
             </div>
+            {%- endif -%}
+            {%- if session.get('role') == 'admin' -%}
             <label for="horizonInput" style="margin-left:0;">Horizon (h):</label>
             <input id="horizonInput" type="number" min="1" max="168" value="24" style="width:70px;margin-right:8px;" />
             <button id="trainBtn" style="padding:6px 12px;">Train & Forecast</button>
             <span id="trainStatus" style="margin-left:10px;font-size:0.9em;color:#555;"></span>
+            {%- endif -%}
         </div>
         <div class="source-list">
             {% for source in sources %}
-            <div class="source-item">
+            <div class="source-item card">
                 <strong>{{ source.source_type }}</strong><br>
-                Capacity: {{ source.capacity_kw }} kW<br>
-                Location: {{ source.street }}, {{ source.city }}
+                <div class="small">Capacity: {{ source.capacity_kw }} kW</div>
+                <div class="small">Location: {{ source.street }}, {{ source.city }}</div>
             </div>
             {% endfor %}
         </div>
+        <div id="sourcesPagination" class="small" style="margin-top:8px;"></div>
     </div>
 
-    <div id="chart"></div>
-    <div id="forecastContainer" style="margin-top:30px;display:none;">
+    <div class="card" style="margin-top:20px;">
+        <h2>Meters</h2>
+        <div id="metersTableContainer">
+            <table id="metersTable" data-is-admin="{{ '1' if session.get('role') == 'admin' else '0' }}" class="table">
+                {%- if session.get('role') == 'admin' -%}
+                <thead>
+                    <tr>
+                        <th>Meter ID</th>
+                        <th>Address</th>
+                        <th>Owner</th>
+                        <th>Max Load (kW)</th>
+                        <th>Last Timestamp</th>
+                        <th>Last kW</th>
+                    </tr>
+                </thead>
+                {%- else -%}
+                <thead>
+                    <tr>
+                        <th>Address</th>
+                        <th>Max Load (kW)</th>
+                        <th>Last Timestamp</th>
+                        <th>Last kW</th>
+                    </tr>
+                </thead>
+                {%- endif -%}
+                <tbody></tbody>
+            </table>
+            <div id="metersPagination" class="small" style="margin-top:8px;"></div>
+        </div>
+    </div>
+
+    <div class="card" style="margin-top:18px;">
+        <div id="chart"></div>
+    </div>
+    <!-- Latest Admin Model Forecast removed from dashboard -->
+    {%- if session.get('role') == 'admin' -%}
+    <div id="forecastContainer" class="card" style="margin-top:18px;display:none;">
         <h2>Forecast</h2>
-        <table id="forecastTable" border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse;font-size:0.9em;">
+        <table id="forecastTable" class="table">
             <thead>
                 <tr><th>Timestamp</th><th>Forecast kW</th><th>Lower</th><th>Upper</th></tr>
             </thead>
             <tbody></tbody>
         </table>
     </div>
-
+    {%- endif -%}
     <script>
     // Utility: chip multi-select state
     const selected = new Set();
 
         async function fetchDataAndPlot() {
-            const response = await fetch('/data');
-            const data = await response.json();
+            // Build query params based on selected chips
+            const hours = 3; // show only last 3 hours
+            const params = new URLSearchParams({ hours: String(hours) });
+            if (selected.size === 1) {
+                // selected source IDs are energy source IDs; pass to production
+                params.set('source_ids', Array.from(selected).join(','));
+            } else if (selected.size > 1) {
+                params.set('source_ids', Array.from(selected).join(','));
+            }
 
-            const trace1 = {
-                x: data['Time'],
-                y: data['Usage'],
-                mode: 'lines+markers',
-                name: 'Usage',
-                line: { color: 'red' }
-            };
+            try {
+                // Fetch usage and production in parallel
+                const prodUrl = '/data/production?' + params.toString();
+                const usageUrl = '/data/usage?' + params.toString();
+                const [prodResp, usageResp] = await Promise.all([fetch(prodUrl), fetch(usageUrl)]);
+                if (!prodResp.ok || !usageResp.ok) {
+                    console.debug('Data endpoints returned non-OK');
+                    return;
+                }
+                const prod = await prodResp.json();
+                const usage = await usageResp.json();
 
-            const trace2 = {
-                x: data['Time'],
-                y: data['Production'],
-                mode: 'lines+markers',
-                name: 'Production',
-                line: { color: 'green' }
-            };
+                const traceProd = { x: prod['Time'], y: prod['Production'], mode: 'lines+markers', name: 'Production', line: { color: 'green' } };
+                const traceUsage = { x: usage['Time'], y: usage['Usage'], mode: 'lines+markers', name: 'Usage', line: { color: 'red' } };
 
-            const layout = {
-                title: 'Electricity Usage vs Production - Last 24 Hours',
-                xaxis: { title: 'Time' },
-                yaxis: { title: 'Energy (kWh)' },
-                legend: { orientation: 'h' }
-            };
-
-            Plotly.newPlot('chart', [trace1, trace2], layout);
+                const layout = { title: 'Electricity Usage vs Production - Last 3 Hours', xaxis: { title: 'Time' }, yaxis: { title: 'Energy (kWh)' }, legend: { orientation: 'h' } };
+                Plotly.newPlot('chart', [traceUsage, traceProd], layout);
+            } catch (err) {
+                console.debug('fetchDataAndPlot error', err);
+            }
         }
 
         async function logout() {
@@ -149,6 +150,86 @@
 
         fetchDataAndPlot();
         setInterval(fetchDataAndPlot, 10000);
+
+    // Pagination configuration
+    const SOURCES_PER_PAGE = 5;
+    const METERS_PER_PAGE = 10;
+    let currentSourcePage = 1;
+    let currentMetersPage = 1;
+    // Store meters fetched from server for pagination
+    let allMeters = [];
+
+    // Helper: render page buttons
+    function renderPagination(containerId, totalItems, perPage, currentPage, onPage) {
+        const container = document.getElementById(containerId);
+        if (!container) return;
+        const totalPages = Math.max(1, Math.ceil(totalItems / perPage));
+        let html = '';
+        html += `<button onclick="(${onPage.toString()})(${Math.max(1,currentPage-1)})" ${currentPage===1? 'disabled':''}>Prev</button> `;
+        for (let p = 1; p <= totalPages; p++) {
+            if (p === currentPage) html += `<strong> ${p} </strong>`;
+            else html += `<button onclick="(${onPage.toString()})(${p})">${p}</button>`;
+        }
+        html += ` <button onclick="(${onPage.toString()})(${Math.min(totalPages,currentPage+1)})" ${currentPage===totalPages? 'disabled':''}>Next</button>`;
+        container.innerHTML = html;
+    }
+
+    // Render sources: server-rendered list -> paginate DOM children
+    function renderSourcePage(page=1) {
+        const list = document.querySelector('.source-list');
+        if (!list) return;
+        const items = Array.from(list.querySelectorAll('.source-item'));
+        const total = items.length;
+        const totalPages = Math.max(1, Math.ceil(total / SOURCES_PER_PAGE));
+        page = Math.min(Math.max(1, page), totalPages);
+        currentSourcePage = page;
+        items.forEach((el, idx) => {
+            const p = Math.floor(idx / SOURCES_PER_PAGE) + 1;
+            el.style.display = (p === page) ? '' : 'none';
+        });
+        // render simple pagination
+        const container = document.getElementById('sourcesPagination');
+        if (!container) return;
+        let html = '';
+        html += `<button onclick="renderSourcePage(${Math.max(1,page-1)})" ${page===1? 'disabled':''}>Prev</button>`;
+        html += ` <span>Page ${page} / ${totalPages}</span> `;
+        html += `<button onclick="renderSourcePage(${Math.min(totalPages,page+1)})" ${page===totalPages? 'disabled':''}>Next</button>`;
+        container.innerHTML = html;
+    }
+
+    // Render meters from `allMeters` array for a given page
+    function renderMetersPage(page=1) {
+        const tbody = document.querySelector('#metersTable tbody');
+        if (!tbody) return;
+        const total = allMeters.length;
+        const totalPages = Math.max(1, Math.ceil(total / METERS_PER_PAGE));
+        page = Math.min(Math.max(1, page), totalPages);
+        currentMetersPage = page;
+        tbody.innerHTML = '';
+        const start = (page-1) * METERS_PER_PAGE;
+        const end = Math.min(total, start + METERS_PER_PAGE);
+        for (let i = start; i < end; i++) {
+            const m = allMeters[i];
+            const tr = document.createElement('tr');
+            if (isAdmin) {
+                tr.innerHTML = `<td>${m.meter_id}</td><td>${m.address}</td><td>${m.owner}</td><td>${m.max_load_kw||''}</td><td>${m.last_timestamp||''}</td><td>${m.last_consumption||''}</td>`;
+            } else {
+                tr.innerHTML = `<td>${m.address}</td><td>${m.max_load_kw||''}</td><td>${m.last_timestamp||''}</td><td>${m.last_consumption||''}</td>`;
+            }
+            tbody.appendChild(tr);
+        }
+        // render meters pagination
+        const container = document.getElementById('metersPagination');
+        if (container) {
+            let html = '';
+            html += `<button onclick="renderMetersPage(${Math.max(1,page-1)})" ${page===1? 'disabled':''}>Prev</button>`;
+            html += ` <span>Page ${page} / ${totalPages}</span> `;
+            html += `<button onclick="renderMetersPage(${Math.min(totalPages,page+1)})" ${page===totalPages? 'disabled':''}>Next</button>`;
+            container.innerHTML = html;
+        }
+    }
+
+    // Latest Admin Model Forecast plotting removed
 
         // Initialize chip click handlers
         document.querySelectorAll('#sourceChips .chip').forEach(chip => {
@@ -164,7 +245,31 @@
             });
         });
 
-        document.getElementById('trainBtn').addEventListener('click', async () => {
+    // Read admin flag from the table's data attribute (set server-side)
+    const isAdmin = document.getElementById('metersTable').dataset.isAdmin === '1';
+
+        async function fetchMeters() {
+            try {
+                    const resp = await fetch('/get_meters_data');
+                    if (!resp.ok) return;
+                    const j = await resp.json();
+                    // store and render paginated
+                    allMeters = Array.isArray(j.meters) ? j.meters : [];
+                    renderMetersPage(1);
+                    // also ensure sources pagination initialized
+                    renderSourcePage(1);
+                } catch (e) {
+                    console.debug('fetchMeters failed', e);
+                }
+        }
+
+        // load meters periodically
+        fetchMeters();
+        setInterval(fetchMeters, 30000);
+
+        const trainBtn = document.getElementById('trainBtn');
+        if (trainBtn) {
+            trainBtn.addEventListener('click', async () => {
             const horizon = document.getElementById('horizonInput').value || '24';
             const statusEl = document.getElementById('trainStatus');
             statusEl.textContent = 'Training...';
@@ -222,7 +327,8 @@
                 statusEl.textContent = 'Request failed';
                 statusEl.style.color = 'red';
             }
-        });
+            });
+        }
     </script>
     <style>
         .chip-selected { background-color:#007bff; color:#fff; }
