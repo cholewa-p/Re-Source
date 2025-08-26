@@ -1,4 +1,4 @@
-from flask import Flask, redirect
+from flask import Flask, redirect, render_template
 from datetime import timedelta
 import logging
 from logging import StreamHandler, FileHandler, Formatter
@@ -23,8 +23,8 @@ app.register_blueprint(
 
 @app.route("/")
 def root():
-    # Redirect root to the login page
-    return redirect("/auth/login-page")
+    # Render a simple main landing page with links to login/create-account
+    return render_template('main_page.html')
 
 
 if __name__ == "__main__":

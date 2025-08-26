@@ -144,8 +144,8 @@
         }
 
         async function logout() {
-            await fetch('/auth/logout', { method: 'POST' });
-            window.location.href = '/auth/login-page';
+                await fetch('/auth/logout', { method: 'POST' });
+                window.location.href = '/';
         }
 
         fetchDataAndPlot();
