@@ -1,7 +1,7 @@
 import os
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from configparser import ConfigParser
 from typing import List, Dict, Any
 
@@ -9,7 +9,9 @@ import psycopg2
 from psycopg2.extras import RealDictCursor, execute_values
 from flask import request, jsonify, Blueprint, session
 
-from timeseries_model import train_electricity_model, train_aggregated_model
+from timeseries_model import train_electricity_model, train_aggregated_model, ElectricityProductionModel
+import numpy as np
+import pandas as pd
 
 # Ensure models directory exists
 MODELS_DIR = os.path.join(os.path.dirname(__file__), "models")
@@ -579,6 +581,10 @@ def usage():
         return jsonify({"Time": times, "Usage": usage_vals}), 200
     finally:
         conn.close()
+
+
+
+# Latest admin model endpoints removed: plotting and minutely forecast are deprecated.
 
 
 @db_bp.route("/update_consumption_readings", methods=["POST"])
