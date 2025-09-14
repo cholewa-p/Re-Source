@@ -34,7 +34,6 @@ def login():
     if not user or not check_password_hash(user["password_hash"], password):
         return jsonify({"error": "Niepoprawny użytkownik lub hasło"}), 401
 
-    # Tworzymy sesję dla zalogowanego użytkownika
     session.permanent = True
     session["user_id"] = user["account_id"]
     session["username"] = user["username"]

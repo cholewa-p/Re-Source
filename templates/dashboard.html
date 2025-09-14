@@ -30,7 +30,7 @@
     </div> -->
     <div class="card sources">
         <h2>Electricity Sources</h2>
-        <div style="margin-bottom:10px;">
+            <div style="margin-bottom:10px;">
             {%- if session.get('role') == 'admin' -%}
             <div style="margin-bottom:6px; font-weight:bold;">Select sources (click to toggle). None selected = All my sources.</div>
             <div id="sourceChips" class="chips">
@@ -41,6 +41,12 @@
                 {% endfor %}
             </div>
             {%- endif -%}
+                <!-- Device control: global buttons -->
+                <div style="margin-top:8px;">
+                    <button id="mockAllOffBtn" style="padding:6px 12px;margin-right:6px;">Turn ALL devices OFF</button>
+                    <button id="mockResetBtn" style="padding:6px 12px;">Reset</button>
+                    <span id="mockStatus" style="margin-left:12px;font-size:0.9em;color:#555;"></span>
+                </div>
             {%- if session.get('role') == 'admin' -%}
             <label for="horizonInput" style="margin-left:0;">Horizon (h):</label>
             <input id="horizonInput" type="number" min="1" max="168" value="24" style="width:70px;margin-right:8px;" />
@@ -50,10 +56,13 @@
         </div>
         <div class="source-list">
             {% for source in sources %}
-            <div class="source-item card">
+            <div class="source-item card" data-source-id="{{ source.source_id }}">
                 <strong>{{ source.source_type }}</strong><br>
-                <div class="small">Capacity: {{ source.capacity_kw }} kW</div>
+                <div class="small">Capacity: {{ ('{:.10f}'.format((source.capacity_kw|default(0)|float))).rstrip('0').rstrip('.') }} kW</div>
                 <div class="small">Location: {{ source.street }}, {{ source.city }}</div>
+                <div style="margin-top:8px;">
+                    <button class="mock-toggle" data-id="{{ source.source_id }}" style="padding:6px 10px;font-size:0.85em;">Turn OFF</button>
+                </div>
             </div>
             {% endfor %}
         </div>
@@ -81,7 +90,7 @@
                         <th>Address</th>
                         <th>Max Load (kW)</th>
                         <th>Last Timestamp</th>
-                        <th>Last kW</th>
+                        <th>Last Load (kW)</th>
                     </tr>
                 </thead>
                 {%- endif -%}
@@ -244,6 +253,117 @@
                 }
             });
         });
+
+        // --- Mock OFF state management (frontend only) ---
+        const MOCK_KEY = 'mock_off_sources_v1';
+        function loadMocked() {
+            try {
+                const raw = localStorage.getItem(MOCK_KEY) || '[]';
+                return new Set(JSON.parse(raw));
+            } catch (e) {
+                return new Set();
+            }
+        }
+        function saveMocked(set) {
+            try {
+                localStorage.setItem(MOCK_KEY, JSON.stringify(Array.from(set)));
+            } catch (e) { /* ignore */ }
+        }
+        const mocked = loadMocked();
+
+        // Apply initial mocked state for per-source buttons and chips
+        function applyMockUI() {
+            document.querySelectorAll('.mock-toggle').forEach(btn => {
+                const id = btn.getAttribute('data-id');
+                if (mocked.has(id)) {
+                    btn.textContent = 'OFF';
+                    btn.style.background = '#ff4d4d';
+                    btn.style.color = '#fff';
+                } else {
+                    btn.textContent = 'Turn OFF';
+                    btn.style.background = '';
+                    btn.style.color = '';
+                }
+            });
+            // Update global status text
+            const statusEl = document.getElementById('mockStatus');
+            if (!statusEl) return;
+            if (mocked.size === 0) statusEl.textContent = 'All devices active.';
+            else statusEl.textContent = `Devices OFF: ${Array.from(mocked).join(', ')}`;
+        }
+
+        applyMockUI();
+
+        // Toggle individual mock when clicking per-source button
+        document.querySelectorAll('.mock-toggle').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const id = btn.getAttribute('data-id');
+                if (mocked.has(id)) {
+                    mocked.delete(id);
+                } else {
+                    mocked.add(id);
+                    // also unselect chip if selected to avoid confusion
+                    const chip = document.querySelector(`#sourceChips .chip[data-id='${id}']`);
+                    if (chip) { chip.classList.remove('chip-selected'); selected.delete(id); }
+                }
+                saveMocked(mocked);
+                applyMockUI();
+            });
+        });
+
+        // Global mock buttons
+        const mockAllOffBtn = document.getElementById('mockAllOffBtn');
+        const mockResetBtn = document.getElementById('mockResetBtn');
+        if (mockAllOffBtn) {
+            mockAllOffBtn.addEventListener('click', () => {
+                // mark all known sources as mocked
+                document.querySelectorAll('.mock-toggle').forEach(b => mocked.add(b.getAttribute('data-id')));
+                saveMocked(mocked);
+                applyMockUI();
+            });
+        }
+        if (mockResetBtn) {
+            mockResetBtn.addEventListener('click', () => {
+                mocked.clear();
+                saveMocked(mocked);
+                applyMockUI();
+            });
+        }
+
+        // Ensure fetchDataAndPlot excludes mocked sources from production/forecast calls
+        const originalFetchDataAndPlot = fetchDataAndPlot;
+        fetchDataAndPlot = async function() {
+            // Build query params based on selected chips and mocked set
+            const hours = 3; // show only last 3 hours
+            const params = new URLSearchParams({ hours: String(hours) });
+            // compute effective selected set excluding mocked
+            const effectiveSelected = new Set(Array.from(selected).filter(id => !mocked.has(id)));
+            if (effectiveSelected.size === 1) {
+                params.set('source_ids', Array.from(effectiveSelected).join(','));
+            } else if (effectiveSelected.size > 1) {
+                params.set('source_ids', Array.from(effectiveSelected).join(','));
+            }
+
+            try {
+                const prodUrl = '/data/production?' + params.toString();
+                const usageUrl = '/data/usage?' + params.toString();
+                const [prodResp, usageResp] = await Promise.all([fetch(prodUrl), fetch(usageUrl)]);
+                if (!prodResp.ok || !usageResp.ok) {
+                    console.debug('Data endpoints returned non-OK');
+                    return;
+                }
+                const prod = await prodResp.json();
+                const usage = await usageResp.json();
+
+                const traceProd = { x: prod['Time'], y: prod['Production'], mode: 'lines+markers', name: 'Production', line: { color: 'green' } };
+                const traceUsage = { x: usage['Time'], y: usage['Usage'], mode: 'lines+markers', name: 'Usage', line: { color: 'red' } };
+
+                const layout = { title: 'Electricity Usage vs Production - Last 3 Hours', xaxis: { title: 'Time' }, yaxis: { title: 'Energy (kWh)' }, legend: { orientation: 'h' } };
+                Plotly.newPlot('chart', [traceUsage, traceProd], layout);
+            } catch (err) {
+                console.debug('fetchDataAndPlot error', err);
+            }
+        };
 
     // Read admin flag from the table's data attribute (set server-side)
     const isAdmin = document.getElementById('metersTable').dataset.isAdmin === '1';
